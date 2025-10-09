@@ -1,0 +1,23 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/staff_view"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("STAFF_DATABASE_URL")
+}
+
+model StaffWithPi {
+  staffEmpId    String @db.VarChar(20)
+  staffUsername String @db.VarChar(150)
+  projectId     String @db.VarChar(150)
+  deptName      String @db.VarChar(150)
+  empClass      String @db.VarChar(20)
+  piEmpId       String @db.VarChar(20)
+  piUsername    String @db.VarChar(150)
+  piFullName    String @db.VarChar(150)
+
+  @@id([staffEmpId, projectId])
+  @@map("staff_with_pi")
+}

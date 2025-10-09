@@ -1,0 +1,77 @@
+generator client {
+  provider      = "prisma-client-js"
+  output        = "../generated/presence"
+  binaryTargets = ["native", "linux-musl", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Attendance {
+  employeeNumber  String             @db.VarChar(255)
+  date            DateTime           @db.Date
+  checkinTime     DateTime?
+  checkoutTime    DateTime?
+  sessionType     AttendanceSession?
+  attendanceType  AttendanceType?
+  locationType    LocationType       @default(CAMPUS)
+  takenLocation   String?            @db.VarChar(255)
+  photoUrl        String?            @db.VarChar(500)
+  audioUrl        String?            @db.VarChar(500)
+  audioDuration   Int?
+  latitude        Float?             @db.Float
+  longitude       Float?             @db.Float
+  locationAddress String?            @db.VarChar(500)
+  county          String?            @db.VarChar(255)
+  state           String?            @db.VarChar(255)
+  postcode        String?            @db.VarChar(20)
+
+  @@id([employeeNumber, date])
+  @@index([date])
+  @@index([employeeNumber])
+  @@index([employeeNumber, date])
+  @@map("attendances")
+}
+
+model Calendar {
+  date        DateTime @id @db.Date
+  isHoliday   Boolean  @default(false)
+  isWeekend   Boolean  @default(false)
+  description String?  @db.VarChar(255)
+
+  @@index([date])
+  @@index([isHoliday])
+  @@map("calendar")
+}
+
+model FieldTrip {
+  fieldTripKey   String   @id @default(cuid())
+  employeeNumber String   @db.VarChar(255)
+  startDate      DateTime @db.Date
+  endDate        DateTime @db.Date
+  description    String?  @db.Text
+  isActive       Boolean  @default(true)
+  createdBy      String   @db.VarChar(255)
+
+  @@index([employeeNumber])
+  @@index([startDate, endDate])
+  @@index([employeeNumber, startDate, endDate])
+  @@map("field_trips")
+}
+
+enum LocationType {
+  CAMPUS
+  FIELDTRIP
+}
+
+enum AttendanceSession {
+  FN
+  AF
+}
+
+enum AttendanceType {
+  FULL_DAY
+  HALF_DAY
+}
