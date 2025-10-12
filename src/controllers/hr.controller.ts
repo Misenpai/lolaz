@@ -5,7 +5,7 @@ import { hrRequests, submittedData } from "../shared/state.js";
 import { generateToken } from "../utils/jwt.js";
 import mysql from "mysql2/promise";
 
-const HR_USER = { username: "HRUser", password: "123456" };
+const HR_USER = { username: "HRUser", password: "password" };
 
 const createStaffDbConnection = async () => {
   const connection = await mysql.createConnection({
@@ -94,8 +94,9 @@ export const getAllPIs = async (req: Request, res: Response) => {
   }
 };
 
+// Update the requestDataFromPIs function in src/controllers/hr.controller.ts
 export const requestDataFromPIs = async (req: Request, res: Response) => {
-  const { piUsernames, month, year } = req.body;
+  const { piUsernames, month, year, message } = req.body;
   if (!piUsernames || !Array.isArray(piUsernames) || !month || !year) {
     return res.status(400).json({
       success: false,
@@ -104,9 +105,14 @@ export const requestDataFromPIs = async (req: Request, res: Response) => {
   }
 
   const requestKey = `${month}-${year}`;
+  const requestMessage = message || "Request for attendance data for";
+
   piUsernames.forEach((pi: string) => {
     if (!hrRequests[pi]) hrRequests[pi] = {};
-    hrRequests[pi][requestKey] = { requestedAt: Date.now() };
+    hrRequests[pi][requestKey] = {
+      requestedAt: Date.now(),
+      message: requestMessage,
+    };
   });
 
   return res.json({
@@ -125,7 +131,16 @@ export const getSubmissionStatus = async (req: Request, res: Response) => {
         .json({ success: false, error: "Month and year are required." });
     }
     const requestKey = `${month}-${year}`;
-    const statuses: Record<string, { status: string; fullName: string }> = {};
+    const statuses: Record<
+      string,
+      {
+        status: string;
+        fullName: string;
+        isPartial?: boolean;
+        submittedCount?: number;
+        totalCount?: number;
+      }
+    > = {};
 
     connection = await createStaffDbConnection();
     const [rows] = await connection.execute(
@@ -139,9 +154,20 @@ export const getSubmissionStatus = async (req: Request, res: Response) => {
       const hasRequest = hrRequests[pi.piUsername]?.[requestKey];
 
       let status: string;
+      let statusInfo: any = {
+        fullName: pi.piFullName,
+      };
+
       if (submission) {
         const isComplete = submission.users && submission.users.length > 0;
         status = isComplete ? "complete" : "pending";
+
+        // Add partial submission info
+        if (submission.isPartial) {
+          statusInfo.isPartial = true;
+          statusInfo.submittedCount = submission.submittedEmployeeIds.length; // Use .length to get the count
+          statusInfo.totalCount = submission.totalEmployeeCount;
+        }
       } else if (hasRequest) {
         status = "requested";
       } else {
@@ -150,7 +176,7 @@ export const getSubmissionStatus = async (req: Request, res: Response) => {
 
       statuses[pi.piUsername] = {
         status,
-        fullName: pi.piFullName,
+        ...statusInfo,
       };
     });
 
@@ -183,17 +209,26 @@ export const downloadReport = async (req: Request, res: Response) => {
   const startDate = new Date(queryYear, queryMonth - 1, 1);
   const endDate = new Date(queryYear, queryMonth, 0);
 
-  // FIX: Calculate working days only up to today
+  // Calculate working days only up to today
   const totalWorkingDays = await calculateWorkingDaysUpToToday(
     startDate,
     endDate,
   );
 
   let allUsersData: any[] = [];
+  let partialSubmissions: string[] = [];
+
   piList.forEach((pi) => {
     const submission = submittedData[pi]?.[requestKey];
     if (submission && submission.users) {
       allUsersData = [...allUsersData, ...submission.users];
+
+      // Track if this PI submitted partial data
+      if (submission.isPartial) {
+        partialSubmissions.push(
+          `${pi} (${submission.submittedEmployeeIds}/${submission.totalEmployeeCount} employees)`,
+        );
+      }
     }
   });
 
@@ -216,6 +251,16 @@ export const downloadReport = async (req: Request, res: Response) => {
     };
   });
 
+  // Add a header row if there are partial submissions
+  let csvData = "";
+  if (partialSubmissions.length > 0) {
+    csvData = `# Note: The following PIs submitted partial data:\n`;
+    partialSubmissions.forEach((ps) => {
+      csvData += `# ${ps}\n`;
+    });
+    csvData += "\n";
+  }
+
   const csvStringifier = createObjectCsvStringifier({
     header: [
       { id: "Project_Staff_Name", title: "Project_Staff_Name" },
@@ -225,7 +270,7 @@ export const downloadReport = async (req: Request, res: Response) => {
     ],
   });
 
-  const csvData =
+  csvData +=
     csvStringifier.getHeaderString() + csvStringifier.stringifyRecords(records);
 
   const fileName =
@@ -237,9 +282,7 @@ export const downloadReport = async (req: Request, res: Response) => {
   res.send(csvData);
 };
 
-// Also update getPIUsersWithAttendance function:
 export const getPIUsersWithAttendance = async (req: Request, res: Response) => {
-  let connection;
   try {
     const { username: piUsername } = req.params;
     const { month, year } = req.query;
@@ -257,31 +300,38 @@ export const getPIUsersWithAttendance = async (req: Request, res: Response) => {
       ? parseInt(year as string)
       : new Date().getFullYear();
 
+    const requestKey = `${queryMonth}-${queryYear}`;
+
+    // Check for the submitted data first
+    const submission = submittedData[piUsername]?.[requestKey];
+    if (!submission || !submission.submittedEmployeeIds) {
+      return res.status(404).json({
+        success: false,
+        error: "No data has been submitted by this PI for the selected period.",
+      });
+    }
+
     const startDate = new Date(queryYear, queryMonth - 1, 1);
     const endDate = new Date(queryYear, queryMonth, 0);
 
-    connection = await createStaffDbConnection();
-    const [staffRows] = await connection.execute(
-      "SELECT * FROM staff_with_pi WHERE piUsername = ?",
-      [piUsername],
-    );
-
-    const staffEntries = staffRows as any[];
-    const staffIds = [...new Set(staffEntries.map((s) => s.staffEmpId))];
+    // Use the list of employee IDs from the submission
+    const staffIds = submission.submittedEmployeeIds;
 
     if (staffIds.length === 0) {
-      return res.json({ success: true, data: { piUsername, users: [] } });
+      return res.json({
+        success: true,
+        data: { piUsername, users: [] },
+      });
     }
 
     const [attendances, totalWorkingDays] = await Promise.all([
       localPrisma.attendance.findMany({
         where: {
-          employeeNumber: { in: staffIds },
+          employeeNumber: { in: staffIds }, // Query is now correctly filtered
           date: { gte: startDate, lte: endDate },
         },
         orderBy: { date: "asc" },
       }),
-      // FIX: Calculate working days only up to today
       calculateWorkingDaysUpToToday(startDate, endDate),
     ]);
 
@@ -292,26 +342,26 @@ export const getPIUsersWithAttendance = async (req: Request, res: Response) => {
       attendancesMap.get(att.employeeNumber)!.push(att);
     });
 
-    const formattedUsers = staffIds
-      .map((staffId) => {
-        const userAttendances = attendancesMap.get(staffId) || [];
-        const userDetails = staffEntries.find((s) => s.staffEmpId === staffId);
-
+    const formattedUsers = submission.users
+      .filter((submittedUser) => submittedUser.username)
+      .map((submittedUser) => {
+        const userAttendances =
+          attendancesMap.get(submittedUser.employeeId) || [];
         const presentDays = new Set(
           userAttendances.map((a) => a.date.toISOString().split("T")[0]),
         ).size;
         const absentDays = Math.max(0, totalWorkingDays - presentDays);
 
         return {
-          username: userDetails?.staffUsername || "Unknown",
-          employeeId: userDetails?.staffEmpId || "Unknown",
+          username: submittedUser.username!,
+          employeeId: submittedUser.employeeId,
           workingDays: totalWorkingDays,
           presentDays,
           absentDays,
           attendances: userAttendances,
         };
       })
-      .sort((a, b) => a.username.localeCompare(b.username));
+      .sort((a, b) => a.username.localeCompare(b.username!));
 
     res.json({
       success: true,
@@ -326,8 +376,6 @@ export const getPIUsersWithAttendance = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("Get PI users attendance error:", error);
     res.status(500).json({ success: false, error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 };
 

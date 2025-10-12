@@ -117,7 +117,7 @@ export const getPIUsersAttendance = async (req: Request, res: Response) => {
       const notCheckedOut = userAttendances.filter(
         (a) => !a.checkoutTime,
       ).length;
-      const totalDays = fullDays + halfDays + notCheckedOut;
+      const totalDays = fullDays + halfDays * 0.5 + notCheckedOut * 0.5;
 
       return {
         employeeNumber: user.employeeNumber,
@@ -199,7 +199,7 @@ export const submitDataToHR = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: "Unauthorized PI" });
     }
 
-    const { month, year } = req.body;
+    const { month, year, selectedEmployees, sendAll } = req.body;
     const requestKey = `${month}-${year}`;
 
     if (!hrRequests[piUsername]?.[requestKey]) {
@@ -221,7 +221,12 @@ export const submitDataToHR = async (req: Request, res: Response) => {
 
     if (staffEntriesForPI.length === 0) {
       if (!submittedData[piUsername]) submittedData[piUsername] = {};
-      submittedData[piUsername][requestKey] = { users: [] };
+      submittedData[piUsername][requestKey] = {
+        users: [],
+        submittedEmployeeIds: [],
+        totalEmployeeCount: 0,
+        isPartial: !sendAll,
+      };
       delete hrRequests[piUsername][requestKey];
       return res.json({
         success: true,
@@ -229,14 +234,24 @@ export const submitDataToHR = async (req: Request, res: Response) => {
       });
     }
 
-    const staffIds = [...new Set(staffEntriesForPI.map((s) => s.staffEmpId))];
-    const staffUsernamesMap = new Map(
-      staffEntriesForPI.map((s) => [s.staffEmpId, s.staffUsername]),
-    );
+    let staffIdsToProcess: string[];
+    if (sendAll) {
+      staffIdsToProcess = [
+        ...new Set(staffEntriesForPI.map((s) => s.staffEmpId)),
+      ];
+    } else {
+      if (!Array.isArray(selectedEmployees) || selectedEmployees.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "No employees selected for submission.",
+        });
+      }
+      staffIdsToProcess = selectedEmployees;
+    }
 
     const attendances = await localPrisma.attendance.findMany({
       where: {
-        employeeNumber: { in: staffIds },
+        employeeNumber: { in: staffIdsToProcess },
         date: { gte: startDate, lte: endDate },
       },
     });
@@ -248,8 +263,12 @@ export const submitDataToHR = async (req: Request, res: Response) => {
       attendancesMap.get(att.employeeNumber)!.push(att);
     });
 
-    const formattedUsers = staffIds.map((staffId) => {
+    const formattedUsers = staffIdsToProcess.map((staffId) => {
       const userAttendances = attendancesMap.get(staffId) || [];
+      const userDetails = staffEntriesForPI.find(
+        (s) => s.staffEmpId === staffId,
+      );
+
       const fullDays = userAttendances.filter(
         (a) => a.attendanceType === AttendanceType.FULL_DAY,
       ).length;
@@ -259,10 +278,11 @@ export const submitDataToHR = async (req: Request, res: Response) => {
       const notCheckedOut = userAttendances.filter(
         (a) => !a.checkoutTime,
       ).length;
-      const totalDays = fullDays + halfDays + notCheckedOut;
+      const totalDays = fullDays + halfDays * 0.5 + notCheckedOut * 0.5;
 
       return {
-        username: staffUsernamesMap.get(staffId),
+        employeeId: userDetails?.staffEmpId || staffId,
+        username: userDetails?.staffUsername || "Unknown",
         monthlyStatistics: {
           totalDays: totalDays,
         },
@@ -270,13 +290,31 @@ export const submitDataToHR = async (req: Request, res: Response) => {
     });
 
     if (!submittedData[piUsername]) submittedData[piUsername] = {};
-    submittedData[piUsername][requestKey] = { users: formattedUsers };
+
+    submittedData[piUsername][requestKey] = {
+      users: formattedUsers,
+      submittedEmployeeIds: staffIdsToProcess,
+      totalEmployeeCount: staffEntriesForPI.length,
+      isPartial: !sendAll,
+    };
+
     delete hrRequests[piUsername][requestKey];
 
-    console.log(`Data submitted by PI: ${piUsername} for ${requestKey}`);
+    const message = sendAll
+      ? `All employee attendance data (${formattedUsers.length} employees) for ${month}/${year} submitted to HR successfully.`
+      : `${formattedUsers.length} selected employee(s) attendance data for ${month}/${year} submitted to HR successfully.`;
+
+    console.log(
+      `Data submitted by PI: ${piUsername} for ${requestKey} - ${
+        sendAll ? "All" : "Selected"
+      } (${formattedUsers.length} employees)`,
+    );
+
     return res.json({
       success: true,
-      message: `Attendance data for ${month}/${year} submitted to HR successfully.`,
+      message,
+      submittedCount: formattedUsers.length,
+      totalCount: staffEntriesForPI.length,
     });
   } catch (error: any) {
     console.error("Submit data to HR error:", error);
