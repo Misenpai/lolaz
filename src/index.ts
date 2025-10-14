@@ -9,15 +9,39 @@ import { initCronJobs } from "./services/cronJobs.js";
 
 dotenv.config({ path: "/opt/presencedb/.env" });
 
-console.log("Environment variables loaded:", {
-  iit_AUTH_BASE_URL: process.env.iit_AUTH_BASE_URL,
-  iit_AUTH_ENDPOINT: process.env.iit_AUTH_ENDPOINT,
-  iit_AUTH_TIMEOUT: process.env.iit_AUTH_TIMEOUT,
-  iit_AUTH_RETRIES: process.env.iit_AUTH_RETRIES,
-  DATABASE_URL: process.env.DATABASE_URL,
-  STAFF_DATABASE_URL: process.env.STAFF_DATABASE_URL,
-  PORT: process.env.PORT,
-});
+// --- Start of Modification ---
+
+// List of required environment variables
+const requiredEnvVars = [
+  "DATABASE_URL",
+  "STAFF_DATABASE_URL",
+  "AD_SERVER",
+  "AD_PORT",
+  "AD_DOMAIN",
+  "AD_TIMEOUT",
+  "PORT",
+  "NODE_ENV",
+  "UPLOAD_DIR",
+  "UPLOAD_PATH",
+  "MAX_FILE_SIZE",
+  "JWT_SECRET",
+];
+
+// Check if all required environment variables are loaded
+const missingEnvVars = requiredEnvVars.filter((envVar) => !process.env[envVar]);
+
+if (missingEnvVars.length > 0) {
+  console.error(
+    `Error: The following environment variables are not loaded: ${missingEnvVars.join(
+      ", ",
+    )}`,
+  );
+  process.exit(1); // Exit the application if configuration is incomplete
+} else {
+  console.log("all environment variable are loaded successfully");
+}
+
+// --- End of Modification ---
 
 import attendanceRoutes from "./routes/attendance.route.js";
 import userRoutes from "./routes/user.route.js";
